@@ -11,7 +11,7 @@ reload live.
   tint show NAME                the resolved palette as JSON
   tint current                  what is applied now
   tint apply NAME [options]     render every target, then reload
-      --black / --no-black      force a #000000 background (default: remembered, on)
+      --black / --no-black      force a #000000 background (off unless asked; remembered)
       --live                    only targets marked live (for a picker's preview)
       --root DIR                render under DIR instead of $HOME, run no reloads
       --no-reload               render in place, run no reloads
@@ -208,7 +208,7 @@ def write_target(t, p, root):
 def apply(name, black=None, live=False, root=None, reload=True):
     state = json.load(open(STATE)) if os.path.exists(STATE) else {}
     if black is None:
-        black = state.get("black", True)
+        black = state.get("black", False)
     name, scheme = find(name)
     p = palette(name, scheme, black)
     changed, cmds = [], []
@@ -234,7 +234,7 @@ def apply(name, black=None, live=False, root=None, reload=True):
 
 def check():
     name, scheme = find((json.load(open(STATE)) if os.path.exists(STATE) else {}).get("name", "Rosé Pine"))
-    p, bad = palette(name, scheme, True), 0
+    p, bad = palette(name, scheme, False), 0
     for t in targets():
         try:
             if t.get("mode") != "gogh-list":
@@ -265,7 +265,7 @@ def main(argv):
     elif cmd == "show" and args:
         name, scheme = find(args[0])
         state = json.load(open(STATE)) if os.path.exists(STATE) else {}
-        print(json.dumps(palette(name, scheme, "--no-black" not in args and state.get("black", True)), indent=1))
+        print(json.dumps(palette(name, scheme, "--no-black" not in args and ("--black" in args or state.get("black", False))), indent=1))
     elif cmd == "current":
         print(open(STATE).read() if os.path.exists(STATE) else "{}")
     elif cmd == "apply" and args:

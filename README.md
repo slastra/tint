@@ -32,7 +32,8 @@ background toward foreground (`surface`, `sunken`, `overlay`, `hairline`,
 `muted`); `syntax_*`; `name`. Filters: `bare`, `upper`, `rgb`, `led`,
 `alpha:NN`.
 
-`--black` (the default, remembered) forces a `#000000` background.
+A scheme keeps its own background. `--black` forces `#000000` for schemes
+you want on true black; the choice is remembered until `--no-black`.
 
 ## To add a target
 
