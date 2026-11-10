@@ -8,6 +8,7 @@ schemes shipped in data/gogh.json, or a kitty-format file in
 reload live.
 
   tint list [QUERY]             scheme names
+  tint list --json              every scheme with swatch colors, and the current one
   tint show NAME                the resolved palette as JSON
   tint current                  what is applied now
   tint apply NAME [options]     render every target, then reload
@@ -256,7 +257,16 @@ def main(argv):
         print(__doc__)
         return 0
     cmd, args = argv[0], argv[1:]
-    if cmd == "list":
+    if cmd == "list" and "--json" in args:
+        # for a picker: every scheme with the few colors a swatch row needs
+        state = json.load(open(STATE)) if os.path.exists(STATE) else {}
+        user, out = set(user_schemes()), []
+        for n, sc in sorted(schemes().items(), key=lambda kv: kv[0].lower()):
+            bg = "#000000" if state.get("black") else sc["background"]
+            out.append({"name": n, "yours": n in user,
+                        "swatches": [bg, sc["foreground"]] + [sc["color%d" % i] for i in (1, 2, 3, 4, 5, 6)]})
+        print(json.dumps({"current": state.get("name", ""), "schemes": out}))
+    elif cmd == "list":
         q = " ".join(args).lower()
         user = set(user_schemes())
         for n in sorted(schemes(), key=str.lower):
