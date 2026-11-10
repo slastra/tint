@@ -7,8 +7,10 @@ schemes shipped in data/gogh.json, or a kitty-format file in
 ~/.config/tint/targets.toml with that palette and nudges whatever can
 reload live.
 
-  tint list [QUERY]             scheme names
-  tint list --json              every scheme with swatch colors, and the current one
+  tint list [QUERY] [--dark|--light]
+                                scheme names, optionally only one kind
+  tint list --json              every scheme with swatch colors and whether it
+                                is dark, and the current one
   tint show NAME                the resolved palette as JSON
   tint current                  what is applied now
   tint apply NAME [options]     render every target, then reload
@@ -117,12 +119,17 @@ def shape(state):
     return out
 
 
+def is_dark(bg):
+    """A scheme is dark or light by how bright its background is."""
+    return sum(w * c for w, c in zip((0.299, 0.587, 0.114), rgb(bg))) < 128
+
+
 def palette(name, scheme, black, state=None):
     p = dict(scheme)
     if black:
         p["background"] = "#000000"
     bg, fg = p["background"], p["foreground"]
-    dark = sum(w * c for w, c in zip((0.299, 0.587, 0.114), rgb(bg))) < 128
+    dark = is_dark(bg)
     hue = lambda n: p["color%d" % (n + 8)] if dark else p["color%d" % n]   # as lastshell's Theme.hue
     derived = {
         # neutrals: the background stepped toward the foreground
@@ -287,14 +294,15 @@ def main(argv):
         user, out = set(user_schemes()), []
         for n, sc in sorted(schemes().items(), key=lambda kv: kv[0].lower()):
             bg = "#000000" if state.get("black") else sc["background"]
-            out.append({"name": n, "yours": n in user,
+            out.append({"name": n, "yours": n in user, "dark": is_dark(bg),
                         "swatches": [bg, sc["foreground"]] + [sc["color%d" % i] for i in (1, 2, 3, 4, 5, 6)]})
         print(json.dumps({"current": state.get("name", ""), "schemes": out}))
     elif cmd == "list":
-        q = " ".join(args).lower()
-        user = set(user_schemes())
-        for n in sorted(schemes(), key=str.lower):
-            if q in n.lower():
+        q = " ".join(a for a in args if not a.startswith("--")).lower()
+        kind = True if "--dark" in args else False if "--light" in args else None
+        user, every = set(user_schemes()), schemes()
+        for n in sorted(every, key=str.lower):
+            if q in n.lower() and kind in (None, is_dark(every[n]["background"])):
                 print(n + ("  (yours)" if n in user else ""))
     elif cmd == "show" and args:
         name, scheme = find(args[0])
