@@ -121,6 +121,7 @@ def palette(name, scheme, black):
     for k, v in derived.items():
         p.setdefault(k, v)          # a scheme file may name any of these itself
     p["name"] = name
+    p["appearance"] = "dark" if dark else "light"   # for formats that must be told
     return p
 
 
