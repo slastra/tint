@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""tint: one terminal color scheme, applied to the whole desktop.
+
+A scheme is 16 ANSI colors plus background and foreground: any of the Gogh
+schemes shipped in data/gogh.json, or a kitty-format file in
+~/.config/tint/schemes/. `tint apply` renders every template listed in
+~/.config/tint/targets.toml with that palette and nudges whatever can
+reload live.
+
+  tint list [QUERY]             scheme names
+  tint show NAME                the resolved palette as JSON
+  tint current                  what is applied now
+  tint apply NAME [options]     render every target, then reload
+      --black / --no-black      force a #000000 background (default: remembered, on)
+      --live                    only targets marked live (for a picker's preview)
+      --root DIR                render under DIR instead of $HOME, run no reloads
+      --no-reload               render in place, run no reloads
+  tint check                    every template renders and every block has its markers
+
+Templates use {{key}} and {{key|filter|...}}. Keys: background, foreground,
+color0-15, the neutrals (surface, sunken, overlay, hairline, selection,
+subtle), the roles (accent, ok, warn, crit, info, agent, muted), any extra
+key a scheme file carries, and `name`. Filters: bare (no #), upper, rgb
+("r, g, b"), led (deeper saturation, for LEDs), alpha:NN (#rrggbbNN).
+"""
+import colorsys, json, os, re, subprocess, sys, tomllib
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+HOME = os.path.expanduser("~")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"), "tint")
+STATE = os.path.join(CONF, "state.json")
+HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def die(msg):
+    sys.exit("tint: " + msg)
+
+
+# ------------------------------------------------------------------ schemes
+
+def gogh():
+    with open(os.path.join(HERE, "data", "gogh.json")) as fh:
+        out = {}
+        for t in json.load(fh):
+            s = {"background": t.get("background"), "foreground": t.get("foreground")}
+            for i in range(16):
+                s["color%d" % i] = t.get("color_%02d" % (i + 1))
+            if all(isinstance(v, str) and HEX.match(v) for v in s.values()):
+                out[t["name"]] = {k: v.lower() for k, v in s.items()}
+        return out
+
+
+def user_schemes():
+    out, d = {}, os.path.join(CONF, "schemes")
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.endswith(".conf"):
+            continue
+        s = {}
+        for line in open(os.path.join(d, f)):
+            m = re.match(r"\s*([a-z_0-9]+)\s+(\S+)\s*$", line)
+            if m and not line.lstrip().startswith("#"):
+                s[m.group(1)] = m.group(2).lower() if HEX.match(m.group(2)) else m.group(2)
+        out[f[:-5]] = s
+    return out
+
+
+def schemes():
+    all_ = gogh()
+    all_.update(user_schemes())     # a user scheme wins over a Gogh one of the same name
+    return all_
+
+
+def find(name):
+    all_ = schemes()
+    for k in all_:
+        if k.lower() == name.lower():
+            return k, all_[k]
+    die("no scheme named %r (try `tint list`)" % name)
+
+
+# ------------------------------------------------------------------ palette
+
+def rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def mix(a, b, t):
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(rgb(a), rgb(b)))
+
+
+def led(h):
+    """The same hue at a saturation an LED can show: muted screen colors read as white on a keyboard."""
+    r, g, b = (v / 255 for v in rgb(h))
+    hh, s, v = colorsys.rgb_to_hsv(r, g, b)
+    s2 = s if s >= 0.62 else min(0.62, s * 1.8)     # pastel in, colour out; vivid in, untouched
+    v2 = v - (s2 - s) * 0.4                         # and a little darker, so it does not glare
+    return "#%02x%02x%02x" % tuple(round(c * 255) for c in colorsys.hsv_to_rgb(hh, s2, v2))
+
+
+def palette(name, scheme, black):
+    p = dict(scheme)
+    if black:
+        p["background"] = "#000000"
+    bg, fg = p["background"], p["foreground"]
+    dark = sum(w * c for w, c in zip((0.299, 0.587, 0.114), rgb(bg))) < 128
+    hue = lambda n: p["color%d" % (n + 8)] if dark else p["color%d" % n]   # as lastshell's Theme.hue
+    derived = {
+        # neutrals: the background stepped toward the foreground
+        "surface": mix(bg, fg, 0.04), "sunken": mix(bg, fg, 0.06), "overlay": mix(bg, fg, 0.09),
+        "hairline": mix(bg, fg, 0.20), "selection": mix(bg, fg, 0.25), "subtle": mix(bg, fg, 0.66),
+        # roles: one meaning each, on every surface
+        "accent": hue(6), "ok": hue(2), "warn": hue(3), "crit": hue(1), "info": hue(4), "agent": hue(5),
+        "muted": p["color8"],
+        # editor syntax, when a scheme says nothing finer
+        "syntax_comment": p["color8"], "syntax_keyword": p["color4"], "syntax_function": p["color1"],
+        "syntax_string": p["color3"], "syntax_number": p["color11"], "syntax_constant": p["color6"],
+        "syntax_type": p["color12"], "syntax_property": mix(fg, p["color6"], 0.4), "syntax_parameter": p["color5"],
+        "syntax_operator": mix(bg, fg, 0.66), "syntax_builtin": p["color14"], "syntax_hint": p["color12"],
+    }
+    for k, v in derived.items():
+        p.setdefault(k, v)          # a scheme file may name any of these itself
+    p["name"] = name
+    return p
+
+
+def fmt(p, expr):
+    key, *filters = [s.strip() for s in expr.split("|")]
+    if key not in p:
+        raise KeyError(key)
+    v = p[key]
+    for f in filters:
+        if f == "bare":
+            v = v.lstrip("#")
+        elif f == "upper":
+            v = v.upper()
+        elif f == "rgb":
+            v = "%d, %d, %d" % rgb(v)
+        elif f == "led":
+            v = led(v)
+        elif f.startswith("alpha:"):
+            v = v + f[6:]
+        else:
+            raise KeyError("filter " + f)
+    return v
+
+
+def render(text, p):
+    return re.sub(r"\{\{([^{}]+)\}\}", lambda m: fmt(p, m.group(1)), text)
+
+
+# ------------------------------------------------------------------ targets
+
+def targets():
+    path = os.path.join(CONF, "targets.toml")
+    if not os.path.exists(path):
+        die("no %s" % path)
+    with open(path, "rb") as fh:
+        return tomllib.load(fh).get("target", [])
+
+
+def dest_path(t, root):
+    d = os.path.expanduser(t["dest"])
+    return d if root is None else os.path.join(root, os.path.relpath(d, HOME))
+
+
+def write_target(t, p, root):
+    """Render one target. Returns True when the file changed."""
+    dest = dest_path(t, root)
+    old = open(dest).read() if os.path.exists(dest) else None
+    if t.get("mode") == "gogh-list":
+        # hyprglaze reads a whole list of Gogh-format themes and looks one up
+        # by name: the shipped list, plus the current palette under its own
+        # name (which must change with the palette, or nothing reloads)
+        entry = {"name": render(t["name"], p), "background": p["background"], "foreground": p["foreground"]}
+        entry.update({"color_%02d" % (i + 1): p["color%d" % i] for i in range(16)})
+        with open(os.path.join(HERE, "data", "gogh.json")) as fh:
+            body = json.dumps(json.load(fh) + [entry], separators=(",", ":"))
+    else:
+        with open(os.path.join(CONF, "templates", t["template"])) as fh:
+            body = render(fh.read(), p)
+    if t.get("mode", "file") == "block":
+        # only the lines between the markers are tint's; the rest is the owner's
+        src = old if old is not None else open(os.path.expanduser(t["dest"])).read()
+        begin, end = t.get("begin", "tint:begin"), t.get("end", "tint:end")
+        lines, out, i = src.split("\n"), [], 0
+        while i < len(lines) and begin not in lines[i]:
+            i += 1
+        j = i + 1
+        while j < len(lines) and end not in lines[j]:
+            j += 1
+        if i >= len(lines) or j >= len(lines):
+            raise ValueError("%s: markers %r / %r not found" % (t["dest"], begin, end))
+        new = "\n".join(lines[:i + 1] + body.rstrip("\n").split("\n") + lines[j:])
+    else:
+        new = body
+    if new == old:
+        return False
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".tint-tmp"
+    with open(tmp, "w") as fh:
+        fh.write(new)
+    if old is not None:
+        os.chmod(tmp, os.stat(dest).st_mode & 0o777)
+    os.replace(tmp, dest)
+    return True
+
+
+def apply(name, black=None, live=False, root=None, reload=True):
+    state = json.load(open(STATE)) if os.path.exists(STATE) else {}
+    if black is None:
+        black = state.get("black", True)
+    name, scheme = find(name)
+    p = palette(name, scheme, black)
+    changed, cmds = [], []
+    for t in targets():
+        if live and not t.get("live"):
+            continue
+        try:
+            if write_target(t, p, root):
+                changed.append(t["dest"])
+                if t.get("reload") and t["reload"] not in cmds:
+                    cmds.append(t["reload"])
+        except (OSError, KeyError, ValueError) as e:
+            print("tint: %s: %s" % (t.get("dest"), e), file=sys.stderr)
+    if root is None:
+        if not live:
+            os.makedirs(CONF, exist_ok=True)
+            json.dump({"name": name, "black": black}, open(STATE, "w"))
+        if reload:
+            for c in cmds:
+                subprocess.run(render(c, p), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return name, changed
+
+
+def check():
+    name, scheme = find((json.load(open(STATE)) if os.path.exists(STATE) else {}).get("name", "Rosé Pine"))
+    p, bad = palette(name, scheme, True), 0
+    for t in targets():
+        try:
+            if t.get("mode") != "gogh-list":
+                render(open(os.path.join(CONF, "templates", t["template"])).read(), p)
+            if t.get("mode") == "block":
+                src = open(os.path.expanduser(t["dest"])).read()
+                for m in (t.get("begin", "tint:begin"), t.get("end", "tint:end")):
+                    if m not in src:
+                        raise ValueError("marker %r missing" % m)
+            print("ok    %s" % t["dest"])
+        except (OSError, KeyError, ValueError) as e:
+            bad += 1
+            print("FAIL  %s: %s" % (t.get("dest"), e))
+    return 1 if bad else 0
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    cmd, args = argv[0], argv[1:]
+    if cmd == "list":
+        q = " ".join(args).lower()
+        user = set(user_schemes())
+        for n in sorted(schemes(), key=str.lower):
+            if q in n.lower():
+                print(n + ("  (yours)" if n in user else ""))
+    elif cmd == "show" and args:
+        name, scheme = find(args[0])
+        state = json.load(open(STATE)) if os.path.exists(STATE) else {}
+        print(json.dumps(palette(name, scheme, "--no-black" not in args and state.get("black", True)), indent=1))
+    elif cmd == "current":
+        print(open(STATE).read() if os.path.exists(STATE) else "{}")
+    elif cmd == "apply" and args:
+        black = True if "--black" in args else False if "--no-black" in args else None
+        root = args[args.index("--root") + 1] if "--root" in args else None
+        rest = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] != "--root")]
+        name, changed = apply(" ".join(rest), black, "--live" in args, root, "--no-reload" not in args)
+        print("%s: %d file(s) changed" % (name, len(changed)))
+        for c in changed:
+            print("  " + c)
+    elif cmd == "check":
+        return check()
+    else:
+        die("unknown command; see `tint help`")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
