@@ -16,12 +16,17 @@ reload live.
       --live                    only targets marked live (for a picker's preview)
       --root DIR                render under DIR instead of $HOME, run no reloads
       --no-reload               render in place, run no reloads
+  tint shape [--radius N] [--border N]
+                                corner radius and border thickness in pixels, for
+                                everything that draws a box (remembered; with no
+                                options, prints the current values)
   tint check                    every template renders and every block has its markers
 
 Templates use {{key}} and {{key|filter|...}}. Keys: background, foreground,
 color0-15, the neutrals (surface, sunken, overlay, hairline, selection,
 subtle), the roles (accent, ok, warn, crit, info, agent, muted), any extra
-key a scheme file carries, and `name`. Filters: bare (no #), upper, rgb
+key a scheme file carries, `name`, `appearance` (dark or light), and the
+shape: `radius` and `border`, whole pixels. Filters: bare (no #), upper, rgb
 ("r, g, b"), led (deeper saturation, for LEDs), alpha:NN (#rrggbbNN).
 """
 import colorsys, json, os, re, subprocess, sys, tomllib
@@ -98,7 +103,21 @@ def led(h):
     return "#%02x%02x%02x" % tuple(round(c * 255) for c in colorsys.hsv_to_rgb(hh, s2, v2))
 
 
-def palette(name, scheme, black):
+SHAPE = {"radius": (0, 0, 32), "border": (1, 0, 8)}     # key: default, min, max
+
+
+def shape(state):
+    """Corner radius and border thickness from the saved state, clamped."""
+    out = {}
+    for key, (default, lo, hi) in SHAPE.items():
+        try:
+            out[key] = max(lo, min(hi, int(state.get(key, default))))
+        except (TypeError, ValueError):
+            out[key] = default
+    return out
+
+
+def palette(name, scheme, black, state=None):
     p = dict(scheme)
     if black:
         p["background"] = "#000000"
@@ -122,6 +141,8 @@ def palette(name, scheme, black):
         p.setdefault(k, v)          # a scheme file may name any of these itself
     p["name"] = name
     p["appearance"] = "dark" if dark else "light"   # for formats that must be told
+    for key, value in shape(state or {}).items():
+        p[key] = str(value)
     return p
 
 
@@ -207,12 +228,13 @@ def write_target(t, p, root):
     return True
 
 
-def apply(name, black=None, live=False, root=None, reload=True):
+def apply(name, black=None, live=False, root=None, reload=True, shaped=None):
     state = json.load(open(STATE)) if os.path.exists(STATE) else {}
     if black is None:
         black = state.get("black", False)
+    state.update(shaped or {})
     name, scheme = find(name)
-    p = palette(name, scheme, black)
+    p = palette(name, scheme, black, state)
     changed, cmds = [], []
     for t in targets():
         if live and not t.get("live"):
@@ -227,7 +249,7 @@ def apply(name, black=None, live=False, root=None, reload=True):
     if root is None:
         if not live:
             os.makedirs(CONF, exist_ok=True)
-            json.dump({"name": name, "black": black}, open(STATE, "w"))
+            json.dump({"name": name, "black": black, **shape(state)}, open(STATE, "w"))
         if reload:
             for c in cmds:
                 subprocess.run(render(c, p), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -235,8 +257,9 @@ def apply(name, black=None, live=False, root=None, reload=True):
 
 
 def check():
-    name, scheme = find((json.load(open(STATE)) if os.path.exists(STATE) else {}).get("name", "Rosé Pine"))
-    p, bad = palette(name, scheme, False), 0
+    state = json.load(open(STATE)) if os.path.exists(STATE) else {}
+    name, scheme = find(state.get("name", "Rosé Pine"))
+    p, bad = palette(name, scheme, False, state), 0
     for t in targets():
         try:
             if t.get("mode") != "gogh-list":
@@ -276,7 +299,7 @@ def main(argv):
     elif cmd == "show" and args:
         name, scheme = find(args[0])
         state = json.load(open(STATE)) if os.path.exists(STATE) else {}
-        print(json.dumps(palette(name, scheme, "--no-black" not in args and ("--black" in args or state.get("black", False))), indent=1))
+        print(json.dumps(palette(name, scheme, "--no-black" not in args and ("--black" in args or state.get("black", False)), state), indent=1))
     elif cmd == "current":
         print(open(STATE).read() if os.path.exists(STATE) else "{}")
     elif cmd == "apply" and args:
@@ -287,6 +310,23 @@ def main(argv):
         print("%s: %d file(s) changed" % (name, len(changed)))
         for c in changed:
             print("  " + c)
+    elif cmd == "shape":
+        state = json.load(open(STATE)) if os.path.exists(STATE) else {}
+        wanted = {}
+        for key in SHAPE:
+            flag = "--" + key
+            if flag in args:
+                try:
+                    wanted[key] = int(args[args.index(flag) + 1])
+                except (IndexError, ValueError):
+                    die("%s takes a whole number of pixels" % flag)
+        if wanted:
+            if not state.get("name"):
+                die("apply a scheme first")
+            name, changed = apply(state["name"], shaped=wanted)
+            state = json.load(open(STATE))
+            print("%d file(s) changed" % len(changed))
+        print("  ".join("%s %dpx" % (k, v) for k, v in shape(state).items()))
     elif cmd == "check":
         return check()
     else:
