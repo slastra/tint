@@ -21,8 +21,9 @@ prompt, keyboard LEDs: one command changes them together.
   scheme works, dark or light.
 - **Live preview.** Targets marked `live` are cheap enough to apply while
   you browse; `--live` writes only those.
-- **Shape too.** Corner radius and border thickness are template keys, set
-  once for everything that draws a box.
+- **A look on top of any scheme.** Corner radius and border thickness are
+  template keys, set once for everything that draws a box, and the accent
+  and secondary can be pinned to any of the scheme's six hues.
 - **Safe to try.** `--root DIR` renders the whole set somewhere else and
   touches nothing; `tint check` proves every template still renders.
 
@@ -51,7 +52,8 @@ tint apply "Tokyo Night"        # every target, then reload
 tint apply Vague --live         # only the live targets (a picker's preview)
 tint apply Vague --root /tmp/x  # render under /tmp/x, touch nothing
 tint apply Vague --black        # force a #000000 background (remembered)
-tint shape --radius 4 --border 1
+tint look --radius 4 --border 1   # corner radius and border thickness
+tint look --accent blue --secondary auto   # which of the scheme's hues play which part
 tint current                    # what is applied now
 tint show Vague                 # the resolved palette as JSON
 tint check                      # every template renders, every block has markers
@@ -69,7 +71,7 @@ Everything lives in `~/.config/tint/`.
 | `targets.toml` | One `[[target]]` per file `tint` writes. |
 | `templates/` | The files themselves, with `{{key}}` where a value goes. |
 | `schemes/*.conf` | Your own schemes, in kitty's format. |
-| `state.json` | The applied scheme, the black flag, radius and border. |
+| `state.json` | The applied scheme, the black flag, and the look. |
 
 A target:
 
@@ -96,7 +98,8 @@ Template keys:
 | `accent`, `ok`, `warn`, `crit`, `info`, `agent`, `muted` | Roles. On a dark background they take the bright ANSI variants. |
 | `syntax_comment`, `syntax_keyword`, and the other `syntax_*` | Editor colors, for schemes that say nothing finer. |
 | `name`, `appearance` | The scheme's name, and `dark` or `light`. |
-| `radius`, `border` | Whole pixels, from `tint shape`. |
+| `secondary` | A second color for small print, kept readable against the surface. |
+| `radius`, `border` | Whole pixels, from `tint look`. |
 
 A scheme file may set any derived key itself, and that value wins.
 

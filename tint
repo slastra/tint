@@ -18,17 +18,22 @@ reload live.
       --live                    only targets marked live (for a picker's preview)
       --root DIR                render under DIR instead of $HOME, run no reloads
       --no-reload               render in place, run no reloads
-  tint shape [--radius N] [--border N]
-                                corner radius and border thickness in pixels, for
-                                everything that draws a box (remembered; with no
-                                options, prints the current values)
+  tint look [--radius N] [--border N] [--accent SLOT] [--secondary SLOT]
+                                the choices that sit on top of any scheme, all
+                                remembered: corner radius and border thickness in
+                                pixels, and which of the scheme's colors is the
+                                accent and which the secondary. SLOT is red, green,
+                                yellow, blue, magenta, cyan (or 1-6), or auto. With
+                                no options it prints them; --json adds the colors
+                                on offer. `tint shape` is the same command.
   tint check                    every template renders and every block has its markers
 
 Templates use {{key}} and {{key|filter|...}}. Keys: background, foreground,
 color0-15, the neutrals (surface, sunken, overlay, hairline, selection,
 subtle), the roles (accent, ok, warn, crit, info, agent, muted), any extra
-key a scheme file carries, `name`, `appearance` (dark or light), and the
-shape: `radius` and `border`, whole pixels. Filters: bare (no #), upper, rgb
+key a scheme file carries, `name`, `appearance` (dark or light), `secondary`
+(a readable second color for small print), and the shape: `radius` and
+`border`, whole pixels. Filters: bare (no #), upper, rgb
 ("r, g, b"), led (deeper saturation, for LEDs), alpha:NN (#rrggbbNN).
 """
 import colorsys, json, os, re, subprocess, sys, tomllib
@@ -119,6 +124,52 @@ def shape(state):
     return out
 
 
+SLOTS = ["red", "green", "yellow", "blue", "magenta", "cyan"]     # ANSI 1-6
+ROLES = ("accent", "secondary")
+
+
+def slot(value):
+    """A role's saved choice as an ANSI slot 1-6, or None for auto."""
+    if isinstance(value, str) and value.lower() in SLOTS:
+        return SLOTS.index(value.lower()) + 1
+    try:
+        return int(value) if 1 <= int(value) <= 6 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def luminance(h):
+    lin = lambda v: v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(c / 255) for c in rgb(h))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a, b):
+    la, lb = luminance(a), luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def readable(color, on, toward):
+    """`color` stepped toward `toward` until it reads at 4.5:1 on `on`."""
+    for _ in range(12):
+        if contrast(color, on) >= 4.5:
+            break
+        color = mix(color, toward, 0.15)
+    return color
+
+
+def own_hue(color, accent):
+    """Colored, and not the accent's hue over again."""
+    h, _, s = colorsys.rgb_to_hls(*(v / 255 for v in rgb(color)))
+    ah, _, asat = colorsys.rgb_to_hls(*(v / 255 for v in rgb(accent)))
+    if s < 0.12:
+        return False
+    if asat < 0.12:
+        return True
+    d = abs(h - ah)
+    return min(d, 1 - d) > 0.06
+
+
 def is_dark(bg):
     """A scheme is dark or light by how bright its background is."""
     return sum(w * c for w, c in zip((0.299, 0.587, 0.114), rgb(bg))) < 128
@@ -146,6 +197,24 @@ def palette(name, scheme, black, state=None):
     }
     for k, v in derived.items():
         p.setdefault(k, v)          # a scheme file may name any of these itself
+    # The accent and the secondary can be pinned to one of the scheme's six
+    # hues (`tint look`), which beats both the default and the scheme file.
+    # Left alone, the secondary is the blue, or the magenta when the blue is
+    # gray or on the accent's hue, or the accent pulled halfway to the text.
+    # lastshell's Theme.qml makes the same choice; keep the two in step.
+    picks = {role: slot((state or {}).get(role)) for role in ROLES}
+    if picks["accent"]:
+        p["accent"] = hue(picks["accent"])
+    if picks["secondary"]:
+        second = hue(picks["secondary"])
+    else:
+        second = next((c for c in (hue(4), hue(5)) if own_hue(c, p["accent"])), mix(p["accent"], fg, 0.5))
+    p.setdefault("secondary", second)
+    if picks["secondary"]:
+        p["secondary"] = second
+    p["secondary"] = readable(p["secondary"], p["surface"], fg)
+    for role in ROLES:              # the pinned color, or nothing: for consumers that derive their own
+        p[role + "_pick"] = p[role] if picks[role] else ""
     p["name"] = name
     p["appearance"] = "dark" if dark else "light"   # for formats that must be told
     for key, value in shape(state or {}).items():
@@ -256,7 +325,8 @@ def apply(name, black=None, live=False, root=None, reload=True, shaped=None):
     if root is None:
         if not live:
             os.makedirs(CONF, exist_ok=True)
-            json.dump({"name": name, "black": black, **shape(state)}, open(STATE, "w"))
+            kept = {role: SLOTS[slot(state.get(role)) - 1] for role in ROLES if slot(state.get(role))}
+            json.dump({"name": name, "black": black, **shape(state), **kept}, open(STATE, "w"))
         if reload:
             for c in cmds:
                 subprocess.run(render(c, p), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -318,7 +388,7 @@ def main(argv):
         print("%s: %d file(s) changed" % (name, len(changed)))
         for c in changed:
             print("  " + c)
-    elif cmd == "shape":
+    elif cmd in ("look", "shape"):
         state = json.load(open(STATE)) if os.path.exists(STATE) else {}
         wanted = {}
         for key in SHAPE:
@@ -328,13 +398,33 @@ def main(argv):
                     wanted[key] = int(args[args.index(flag) + 1])
                 except (IndexError, ValueError):
                     die("%s takes a whole number of pixels" % flag)
+        for role in ROLES:
+            flag = "--" + role
+            if flag in args:
+                value = args[args.index(flag) + 1] if args.index(flag) + 1 < len(args) else ""
+                if value != "auto" and not slot(value):
+                    die("%s takes one of: auto, %s" % (flag, ", ".join(SLOTS)))
+                wanted[role] = None if value == "auto" else slot(value)
         if wanted:
             if not state.get("name"):
                 die("apply a scheme first")
             name, changed = apply(state["name"], shaped=wanted)
             state = json.load(open(STATE))
-            print("%d file(s) changed" % len(changed))
-        print("  ".join("%s %dpx" % (k, v) for k, v in shape(state).items()))
+            if "--json" not in args:
+                print("%d file(s) changed" % len(changed))
+        now = dict(shape(state), **{role: state.get(role) or "auto" for role in ROLES})
+        if "--json" in args:
+            # for a settings dialog: the choices, and the colors each would be
+            name, scheme = find(state.get("name", "Rosé Pine"))
+            p = palette(name, scheme, state.get("black", False), state)
+            auto = palette(name, scheme, state.get("black", False), {k: v for k, v in state.items() if k not in ROLES})
+            dark = is_dark(p["background"])
+            now.update(scheme=name, limits={k: [lo, hi] for k, (_, lo, hi) in SHAPE.items()},
+                       colors={role: p[role] for role in ROLES}, auto={role: auto[role] for role in ROLES},
+                       slots=[{"name": n, "color": p["color%d" % (i + 1 + (8 if dark else 0))]} for i, n in enumerate(SLOTS)])
+            print(json.dumps(now))
+        else:
+            print("  ".join(["%s %dpx" % (k, now[k]) for k in SHAPE] + ["%s %s" % (r, now[r]) for r in ROLES]))
     elif cmd == "check":
         return check()
     else:
