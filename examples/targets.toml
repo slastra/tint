@@ -1,0 +1,10 @@
+# What `tint apply` writes. Each target renders templates/<template> into
+# dest. mode = "file" (default) owns the whole file; mode = "block" owns only
+# the lines between the tint:begin / tint:end markers in dest. `reload` runs
+# after a change; `live = true` marks targets cheap enough for a preview.
+
+[[target]]
+template = "kitty-colors.conf"
+dest = "~/.config/kitty/colors.conf"
+reload = "pkill -USR1 -x kitty"
+live = true
