@@ -18,14 +18,17 @@ reload live.
       --live                    only targets marked live (for a picker's preview)
       --root DIR                render under DIR instead of $HOME, run no reloads
       --no-reload               render in place, run no reloads
-  tint look [--radius N] [--border N] [--accent SLOT] [--secondary SLOT]
+  tint look [--radius N] [--border N] [--accent SLOT] [--secondary SLOT] [--font PAIR]
                                 the choices that sit on top of any scheme, all
                                 remembered: corner radius and border thickness in
-                                pixels, and which of the scheme's colors is the
-                                accent and which the secondary. SLOT is red, green,
-                                yellow, blue, magenta, cyan (or 1-6), or auto. With
-                                no options it prints them; --json adds the colors
-                                on offer. `tint shape` is the same command.
+                                pixels, which of the scheme's colors is the accent
+                                and which the secondary, and the font pair. SLOT is
+                                red, green, yellow, blue, magenta, cyan (or 1-6),
+                                or auto. PAIR is a name from fonts.toml. With no
+                                options it prints them; --json adds the colors and
+                                pairs on offer. `tint shape` is the same command.
+  tint fonts                    the font pairs in ~/.config/tint/fonts.toml, and
+                                which families fontconfig cannot find
   tint check                    every template renders and every block has its markers
 
 Templates use {{key}} and {{key|filter|...}}. Keys: background, foreground,
@@ -33,8 +36,20 @@ color0-15, the neutrals (surface, sunken, overlay, hairline, selection,
 subtle), the roles (accent, ok, warn, crit, info, agent, muted), any extra
 key a scheme file carries, `name`, `appearance` (dark or light), `secondary`
 (a readable second color for small print), and the shape: `radius` and
-`border`, whole pixels. Filters: bare (no #), upper, rgb
-("r, g, b"), led (deeper saturation, for LEDs), alpha:NN (#rrggbbNN).
+`border`, whole pixels. The font pair: `font` (its name), `font_mono` and
+`font_sans` (families), `font_mono_size` and `font_sans_size` (points), and
+`font_scale` (a multiplier for interfaces whose sizes were chosen for another
+font). Filters: bare (no #), upper, rgb ("r, g, b"), led (deeper saturation,
+for LEDs), alpha:NN (#rrggbbNN).
+
+A font pair is a table in ~/.config/tint/fonts.toml:
+
+  [martian]
+  mono = "MartianMono Nerd Font"
+  sans = "Martian Grotesk"
+  mono_size = 10        # optional, default 11
+  sans_size = 10        # optional, default 11
+  scale = 0.8           # optional, default 1.0
 """
 import colorsys, json, os, re, subprocess, sys, tomllib
 
@@ -122,6 +137,28 @@ def shape(state):
         except (TypeError, ValueError):
             out[key] = default
     return out
+
+
+# The font pair when none is chosen: whatever the system calls its defaults.
+NO_FONT = {"mono": "monospace", "sans": "sans-serif", "mono_size": 11, "sans_size": 11, "scale": 1.0}
+
+
+def font_pairs():
+    """The pairs in fonts.toml, each filled out with the defaults."""
+    path = os.path.join(CONF, "fonts.toml")
+    if not os.path.exists(path):
+        return {}
+    with open(path, "rb") as fh:
+        raw = tomllib.load(fh)
+    return {name: dict(NO_FONT, **{k: v for k, v in t.items() if k in NO_FONT})
+            for name, t in raw.items() if isinstance(t, dict) and t.get("mono") and t.get("sans")}
+
+
+def font(state):
+    """The chosen pair's name and values; ("", the defaults) when there is none."""
+    name = (state or {}).get("font") or ""
+    pairs = font_pairs()
+    return (name, pairs[name]) if name in pairs else ("", dict(NO_FONT))
 
 
 SLOTS = ["red", "green", "yellow", "blue", "magenta", "cyan"]     # ANSI 1-6
@@ -219,6 +256,9 @@ def palette(name, scheme, black, state=None):
     p["appearance"] = "dark" if dark else "light"   # for formats that must be told
     for key, value in shape(state or {}).items():
         p[key] = str(value)
+    p["font"], pair = font(state)
+    for key, value in pair.items():
+        p["font_" + key] = "%g" % value if isinstance(value, (int, float)) else value
     return p
 
 
@@ -326,6 +366,8 @@ def apply(name, black=None, live=False, root=None, reload=True, shaped=None):
         if not live:
             os.makedirs(CONF, exist_ok=True)
             kept = {role: SLOTS[slot(state.get(role)) - 1] for role in ROLES if slot(state.get(role))}
+            if font(state)[0]:
+                kept["font"] = font(state)[0]
             json.dump({"name": name, "black": black, **shape(state), **kept}, open(STATE, "w"))
         if reload:
             for c in cmds:
@@ -405,6 +447,11 @@ def main(argv):
                 if value != "auto" and not slot(value):
                     die("%s takes one of: auto, %s" % (flag, ", ".join(SLOTS)))
                 wanted[role] = None if value == "auto" else slot(value)
+        if "--font" in args:
+            value = args[args.index("--font") + 1] if args.index("--font") + 1 < len(args) else ""
+            if value not in font_pairs():
+                die("--font takes one of: %s" % (", ".join(font_pairs()) or "(no pairs in fonts.toml)"))
+            wanted["font"] = value
         if wanted:
             if not state.get("name"):
                 die("apply a scheme first")
@@ -412,7 +459,7 @@ def main(argv):
             state = json.load(open(STATE))
             if "--json" not in args:
                 print("%d file(s) changed" % len(changed))
-        now = dict(shape(state), **{role: state.get(role) or "auto" for role in ROLES})
+        now = dict(shape(state), **{role: state.get(role) or "auto" for role in ROLES}, font=font(state)[0])
         if "--json" in args:
             # for a settings dialog: the choices, and the colors each would be
             name, scheme = find(state.get("name", "Rosé Pine"))
@@ -421,10 +468,26 @@ def main(argv):
             dark = is_dark(p["background"])
             now.update(scheme=name, limits={k: [lo, hi] for k, (_, lo, hi) in SHAPE.items()},
                        colors={role: p[role] for role in ROLES}, auto={role: auto[role] for role in ROLES},
-                       slots=[{"name": n, "color": p["color%d" % (i + 1 + (8 if dark else 0))]} for i, n in enumerate(SLOTS)])
+                       slots=[{"name": n, "color": p["color%d" % (i + 1 + (8 if dark else 0))]} for i, n in enumerate(SLOTS)],
+                       fonts=[dict(v, name=k) for k, v in font_pairs().items()])
             print(json.dumps(now))
         else:
-            print("  ".join(["%s %dpx" % (k, now[k]) for k in SHAPE] + ["%s %s" % (r, now[r]) for r in ROLES]))
+            print("  ".join(["%s %dpx" % (k, now[k]) for k in SHAPE] + ["%s %s" % (r, now[r]) for r in ROLES]
+                            + ["font %s" % (now["font"] or "(system)")]))
+    elif cmd == "fonts":
+        state = json.load(open(STATE)) if os.path.exists(STATE) else {}
+        current, pairs = font(state)[0], font_pairs()
+        if not pairs:
+            die("no pairs in %s" % os.path.join(CONF, "fonts.toml"))
+        try:
+            have = subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True).stdout
+            have = {f.strip().lower() for line in have.splitlines() for f in line.split(",")}
+        except OSError:
+            have = None
+        for name, v in pairs.items():
+            missing = [f for f in (v["mono"], v["sans"]) if have is not None and f.lower() not in have]
+            print("%s %-12s %s %g / %s %g%s" % ("*" if name == current else " ", name, v["mono"], v["mono_size"],
+                  v["sans"], v["sans_size"], "   (not installed: %s)" % ", ".join(missing) if missing else ""))
     elif cmd == "check":
         return check()
     else:

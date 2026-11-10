@@ -1,0 +1,13 @@
+# Font pairs for `tint look --font NAME`: a monospace and the sans that goes
+# with it. Sizes are points and default to 11; `scale` defaults to 1.
+
+[plex]
+mono = "IBM Plex Mono"
+sans = "IBM Plex Sans"
+
+[martian]
+mono = "Martian Mono"
+sans = "Martian Grotesk"
+mono_size = 10
+sans_size = 10
+scale = 0.8

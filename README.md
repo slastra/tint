@@ -24,6 +24,9 @@ prompt, keyboard LEDs: one command changes them together.
 - **A look on top of any scheme.** Corner radius and border thickness are
   template keys, set once for everything that draws a box, and the accent
   and secondary can be pinned to any of the scheme's six hues.
+- **Font pairs.** Name a monospace and the sans that goes with it once, in
+  `fonts.toml`, and switch the terminal, the toolkits and the shell between
+  pairs with one command.
 - **Safe to try.** `--root DIR` renders the whole set somewhere else and
   touches nothing; `tint check` proves every template still renders.
 
@@ -54,6 +57,8 @@ tint apply Vague --root /tmp/x  # render under /tmp/x, touch nothing
 tint apply Vague --black        # force a #000000 background (remembered)
 tint look --radius 4 --border 1   # corner radius and border thickness
 tint look --accent blue --secondary auto   # which of the scheme's hues play which part
+tint look --font martian        # a font pair from fonts.toml
+tint fonts                      # the pairs, and any family that is not installed
 tint current                    # what is applied now
 tint show Vague                 # the resolved palette as JSON
 tint check                      # every template renders, every block has markers
@@ -71,6 +76,7 @@ Everything lives in `~/.config/tint/`.
 | `targets.toml` | One `[[target]]` per file `tint` writes. |
 | `templates/` | The files themselves, with `{{key}}` where a value goes. |
 | `schemes/*.conf` | Your own schemes, in kitty's format. |
+| `fonts.toml` | Font pairs: one table per pair. Optional. |
 | `state.json` | The applied scheme, the black flag, and the look. |
 
 A target:
@@ -100,8 +106,24 @@ Template keys:
 | `name`, `appearance` | The scheme's name, and `dark` or `light`. |
 | `secondary` | A second color for small print, kept readable against the surface. |
 | `radius`, `border` | Whole pixels, from `tint look`. |
+| `font`, `font_mono`, `font_sans` | The chosen pair's name and its two families. `monospace` and `sans-serif` when no pair is chosen. |
+| `font_mono_size`, `font_sans_size`, `font_scale` | Point sizes (default 11), and a multiplier for interfaces sized for another font (default 1). |
 
 A scheme file may set any derived key itself, and that value wins.
+
+A font pair is a table in `fonts.toml`. Only `mono` and `sans` are required:
+
+```toml
+[martian]
+mono = "MartianMono Nerd Font"
+sans = "Martian Grotesk"
+mono_size = 10
+sans_size = 10
+scale = 0.8
+```
+
+Fonts reach a program the same way colors do, through a template: a kitty
+include with `font_family {{font_mono}}`, for example. `examples/` has one.
 
 Filters follow a key after `|`: `bare` (no `#`), `upper`, `rgb`
 (`r, g, b`), `led` (deeper saturation, for LEDs), `alpha:NN` (`#rrggbbNN`).
